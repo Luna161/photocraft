@@ -151,11 +151,15 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         };
         (tl!("Unsaved changes"), crate::i18n::fmt(template, &[("name", &name)]))
     };
-    // Left to right, as drawn: (label, key, primary, min width, answer).
-    let buttons: &[(&str, Key, bool, f32, Answer)] = if reverts {
-        &[("Cancel", Key::C, false, 84.0, Answer::Cancel), ("Revert", Key::R, true, 84.0, Answer::Discard)]
-    } else {
-        &[("Don't Save", Key::D, false, 100.0, Answer::Discard), ("Cancel", Key::C, false, 84.0, Answer::Cancel), ("Save", Key::S, true, 84.0, Answer::Save)]
+    // Left to right, as drawn: (label, key, primary, min width, answer). macOS puts the primary
+    // button last; Windows and Linux desktops put it first (#776).
+    let (cancel_b, revert_b) = (("Cancel", Key::C, false, 84.0, Answer::Cancel), ("Revert", Key::R, true, 84.0, Answer::Discard));
+    let (dont_save_b, save_b) = (("Don't Save", Key::D, false, 100.0, Answer::Discard), ("Save", Key::S, true, 84.0, Answer::Save));
+    let buttons: &[(&str, Key, bool, f32, Answer)] = match (reverts, cfg!(target_os = "macos")) {
+        (true, true) => &[cancel_b, revert_b],
+        (true, false) => &[revert_b, cancel_b],
+        (false, true) => &[dont_save_b, cancel_b, save_b],
+        (false, false) => &[save_b, dont_save_b, cancel_b],
     };
     let mut answer = ctx.input_mut(|i| buttons.iter().find(|b| i.consume_key(egui::Modifiers::NONE, b.1)).map(|b| b.4));
     // egui's Tab order follows the right-to-left layout below; walk the buttons left to right instead.
@@ -358,15 +362,19 @@ mod tests {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
         assert!(intercept(h.state_mut(), "file.closeAll", &Value::Null));
         h.run_steps(2);
-        let focused = |h: &Harness<'_, PhotocraftApp>| ["(D)on't Save", "(C)ancel", "(S)ave"].into_iter().find(|l| h.get_by_label(l).is_focused());
-        for want in ["(D)on't Save", "(C)ancel", "(S)ave", "(D)on't Save"] {
+        // macOS puts the primary button last, Windows and Linux first (#776).
+        let order = if cfg!(target_os = "macos") { ["(D)on't Save", "(C)ancel", "(S)ave"] } else { ["(S)ave", "(D)on't Save", "(C)ancel"] };
+        let xs: Vec<f32> = order.iter().map(|l| h.get_by_label(l).rect().center().x).collect();
+        assert!(xs.windows(2).all(|w| w[0] < w[1]), "drawn left to right in platform order: {xs:?}");
+        let focused = |h: &Harness<'_, PhotocraftApp>| order.into_iter().find(|l| h.get_by_label(l).is_focused());
+        for want in [order[0], order[1], order[2], order[0]] {
             h.key_press(Key::Tab);
             h.run_steps(2);
             assert_eq!(focused(&h), Some(want));
         }
         h.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
         h.run_steps(2);
-        assert_eq!(focused(&h), Some("(S)ave"));
+        assert_eq!(focused(&h), Some(order[2]));
         h.key_press(Key::D);
         h.run_steps(2);
         assert_eq!(h.state().discard.as_ref().map(|p| p.docs.len()), Some(1), "D answered the first document");
